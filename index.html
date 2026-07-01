@@ -520,7 +520,7 @@
   let telegramProxyPrefix = (document.getElementById("proxyInput") || {}).value || "";
   let telegramPollTimer = null;
   const TELEGRAM_CHANNELS = ["kupolrussia", "lpr1_treugolnik"];
-  const TELEGRAM_POLL_MS = 30000; // не частіше раз на хвилину — поважаємо чужий сервер
+  const TELEGRAM_POLL_MS = 60000; // не частіше раз на хвилину — поважаємо чужий сервер
 
   // Точний офіційний порядок 27 областей у відповіді alerts.in.ua
   const ALERTS_OBLAST_ORDER = [
@@ -578,18 +578,114 @@
   }
 
   // Записує зміну статусу в історію: відкриває новий запис при вході в тривогу,
-  // закриває останній відкритий запис при виході з тривоги
+  // закриває останній відкритий запис при виході з тривоги.
+  // Тримаємо не більше 5 записів: коли з'являється 6-й, найстаріший видаляється.
+  const MAX_HISTORY = 5;
   function logHistoryTransition(st, wasAlert, isAlert, when) {
     if (!wasAlert && isAlert) {
       st.history.push({ start: when, end: null });
+      if (st.history.length > MAX_HISTORY) st.history.shift();
     } else if (wasAlert && !isAlert) {
       const last = st.history[st.history.length - 1];
       if (last && last.end === null) last.end = when;
     }
   }
 
+  // ===== Збереження стану у "JSON-файл" =====
+  // Справжнього бекенду в статичного сайту немає, тому як постійне сховище
+  // використовуємо localStorage браузера: туди пишеться один JSON-об'єкт
+  // { updatedAt, regions: { "Назва області": { active, since, history:[...] } } }.
+  // Це працює як локальний JSON-файл конкретного відвідувача: переживає
+  // перезавантаження сторінки на цьому ж пристрої/браузері, оновлюється
+  // кожні 30 секунд і одразу після кожного успішного опитування джерела.
+  const STORAGE_KEY = "airAlertsStateV1";
+
+  function serializeStateForStorage() {
+    const out = {};
+    Object.keys(currentState).forEach(name => {
+      const st = currentState[name];
+      if (st.source === "немає джерела") return; // нема сенсу зберігати регіони без джерела
+      out[name] = {
+        active: st.status === "alert",
+        since: st.since ? st.since.toISOString() : null,
+        // Найновіший запис зберігаємо першим — так, як він показується в модалці
+        history: st.history.slice(-MAX_HISTORY).map(h => ({
+          start: h.start.toISOString(),
+          end: h.end ? h.end.toISOString() : null
+        })).reverse()
+      };
+    });
+    return out;
+  }
+
+  function saveStateToStorage() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        updatedAt: new Date().toISOString(),
+        regions: serializeStateForStorage()
+      }));
+    } catch (e) {
+      console.warn("Не вдалося зберегти стан у localStorage:", e.message);
+    }
+  }
+
+  function loadStateFromStorage() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return (parsed && parsed.regions) ? parsed.regions : null;
+    } catch (e) {
+      console.warn("Не вдалося прочитати збережений стан:", e.message);
+      return null;
+    }
+  }
+
+  // Переносимо збережену історію/статус у щойно побудований currentState
+  // (виклик — одразу після buildInitialState, перед першим реальним опитуванням)
+  function restoreStateFromStorage() {
+    const saved = loadStateFromStorage();
+    if (!saved) return;
+
+    Object.keys(saved).forEach(name => {
+      const st = currentState[name];
+      const savedRegion = saved[name];
+      if (!st || !savedRegion) return;
+
+      try {
+        st.history = (savedRegion.history || [])
+          .slice()
+          .reverse() // повертаємо у хронологічний порядок (найстаріший перший), як тримаємо в пам'яті
+          .map(h => ({ start: new Date(h.start), end: h.end ? new Date(h.end) : null }))
+          .filter(h => !isNaN(h.start));
+
+        if (savedRegion.active) {
+          st.status = "alert";
+          st.since = savedRegion.since ? new Date(savedRegion.since) : (st.history.length ? st.history[st.history.length - 1].start : null);
+        } else if (savedRegion.since || (st.history.length && st.history[st.history.length - 1].end)) {
+          // Останній відомий стан — "спокійно" (буде уточнено першим реальним опитуванням)
+          st.status = "safe";
+        }
+      } catch (e) {
+        console.warn("Пропущено відновлення для", name, e.message);
+      }
+    });
+
+    // Оновлюємо колір регіонів на мапі під відновлений стан ще до першого опитування
+    Object.keys(currentState).forEach(updateRegionVisual);
+  }
+
   function fmtTime(d) {
     return d.toLocaleString("uk-UA", {day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit"});
+  }
+
+  // Форматує тривалість у хвилинах у вигляд "45 хв" або "1 год 38 хв"
+  function fmtDurationMin(totalMin) {
+    totalMin = Math.max(1, Math.round(totalMin));
+    if (totalMin < 60) return totalMin + " хв";
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return m === 0 ? (h + " год") : (h + " год " + m + " хв");
   }
 
   function classForStatus(status) {
@@ -612,6 +708,7 @@
 
     fitProjectionToFeatures(features);
     currentState = buildInitialState(features);
+    restoreStateFromStorage();
 
     // Малюємо регіони
     regionsGroup.selectAll("path")
@@ -688,6 +785,7 @@
       });
 
       setAlertsApiStatus("Оновлено " + fmtTime(now) + " (alerts.in.ua)");
+      saveStateToStorage();
     } catch (err) {
       console.error("alerts.in.ua error:", err);
       setAlertsApiStatus("⚠ Помилка: " + err.message + ". Перевірте токен.");
@@ -784,6 +882,7 @@
     });
 
     setTelegramApiStatus("Telegram перевірено " + fmtTime(now) + " — неофіційні дані (kupolrussia, lpr1_treugolnik)");
+    saveStateToStorage();
   }
 
   document.getElementById("proxyBtn").addEventListener("click", () => {
@@ -797,6 +896,11 @@
   // Пробуємо одразу й без проксі — раптом CORS не заблокує (залежить від хостингу)
   telegramPollTimer = setInterval(pollTelegramSources, TELEGRAM_POLL_MS);
   pollTelegramSources();
+
+  // Незалежне збереження стану кожні 30 секунд — гарантія, що "JSON-файл"
+  // (localStorage) регулярно оновлюється, навіть якщо між опитуваннями
+  // джерел відбулась зміна статусу.
+  setInterval(saveStateToStorage, 30000);
 
   // ===== Масштабування та панорамування з обмеженнями =====
   function clampScale(s) {
@@ -920,16 +1024,24 @@
   mapContainer.addEventListener("touchend", function() { touchState = null; }, { passive: true });
 
   // ===== Модальне вікно =====
-  function openModal(name) {
+  let modalTickTimer = null;
+  let modalOpenName = null;
+
+  function renderModalContent(name) {
     const st = currentState[name];
     if (!st) return;
 
-    document.getElementById("modalTitle").textContent = name;
     const statusEl = document.getElementById("modalStatus");
+    const now = new Date();
 
     if (st.status === "alert") {
       statusEl.className = "status-line is-alert";
-      statusEl.textContent = "⚠ Тривога" + (st.since ? " з " + fmtTime(st.since) : "");
+      let text = "⚠ Тривога";
+      if (st.since) {
+        const elapsedMin = (now - st.since) / 60000;
+        text += " — триває вже " + fmtDurationMin(elapsedMin) + " (з " + fmtTime(st.since) + ")";
+      }
+      statusEl.textContent = text;
     } else if (st.status === "safe") {
       statusEl.className = "status-line is-safe";
       statusEl.textContent = "Зараз спокійно";
@@ -949,22 +1061,46 @@
       histEl.appendChild(empty);
     } else {
       const last5 = [...st.history].sort((a, b) => b.start - a.start).slice(0, 5);
-      const now = new Date();
       last5.forEach(h => {
         const item = document.createElement("div");
         item.className = "history-item";
-        const durText = h.end
-          ? Math.max(1, Math.round((h.end - h.start) / 60000)) + " хв"
-          : "триває вже " + Math.max(1, Math.round((now - h.start) / 60000)) + " хв";
+        const totalMin = ((h.end || now) - h.start) / 60000;
+        const formatted = fmtDurationMin(totalMin);
+        const durText = h.end ? formatted : "триває вже " + formatted;
         item.innerHTML = `<span>${fmtTime(h.start)}</span><span class="dur">${durText}</span>`;
         histEl.appendChild(item);
       });
     }
+  }
+
+  function openModal(name) {
+    if (!currentState[name]) return;
+
+    document.getElementById("modalTitle").textContent = name;
+    modalOpenName = name;
+    renderModalContent(name);
+
+    // Лічильник "триває вже X" оновлюється щосекунди, поки модалка відкрита
+    if (modalTickTimer) clearInterval(modalTickTimer);
+    modalTickTimer = setInterval(() => renderModalContent(modalOpenName), 1000);
 
     document.getElementById("overlay").classList.add("open");
   }
 
-  document.getElementById("closeBtn").onclick = () => { document.getElementById("overlay").classList.remove("open"); };
+  function closeModal() {
+    document.getElementById("overlay").classList.remove("open");
+    if (modalTickTimer) { clearInterval(modalTickTimer); modalTickTimer = null; }
+    modalOpenName = null;
+  }
+
+  document.getElementById("closeBtn").onclick = closeModal;
+  document.getElementById("overlay").addEventListener("click", (e) => {
+    if (e.target.id === "overlay") closeModal();
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeModal();
+  });
+
 
   // ======== СИНХРОННЕ ЗАВАНТАЖЕННЯ ТА ПЕРЕКЛАД ГЕОДАНИХ ========
   async function loadData() {

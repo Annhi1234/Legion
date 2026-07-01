@@ -520,7 +520,7 @@
   let telegramProxyPrefix = (document.getElementById("proxyInput") || {}).value || "";
   let telegramPollTimer = null;
   const TELEGRAM_CHANNELS = ["kupolrussia", "lpr1_treugolnik"];
-  const TELEGRAM_POLL_MS = 60000; // не частіше раз на хвилину — поважаємо чужий сервер
+  const TELEGRAM_POLL_MS = 30000; // не частіше раз на хвилину — поважаємо чужий сервер
 
   // Точний офіційний порядок 27 областей у відповіді alerts.in.ua
   const ALERTS_OBLAST_ORDER = [

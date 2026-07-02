@@ -129,6 +129,12 @@
       height: 100%;
       display: block;
     }
+    /* mapGroup рухається/масштабується на кожен кадр під час перетягування
+       чи зуму — хінт браузеру заздалегідь підготувати композитний шар
+       (GPU), замість того щоб робити це "на льоту" з першим жестом. */
+    #mapGroup {
+      will-change: transform;
+    }
     .region-path {
       fill: var(--safe);
       stroke: var(--safe-border);
@@ -142,17 +148,22 @@
     .region-path.alert {
       fill: var(--alert);
       stroke: var(--alert-border);
-      animation: pulse 1.6s infinite;
+      animation: pulse 1.6s ease-in-out infinite;
+      will-change: fill-opacity;
     }
     .region-path.unknown {
       fill: var(--unknown);
       stroke: var(--unknown-border);
       stroke-dasharray: 2.5,2;
     }
+    /* Раніше тут крутився нескінченний filter:drop-shadow — це один із
+       найважчих типів CSS-анімації для рендерера, особливо на мобільних
+       GPU, і працював він БЕЗПЕРЕРВНО для кожного регіону з тривогою, а
+       не лише під час взаємодії. Проста opacity-анімація дає той самий
+       "пульсуючий" ефект, але обробляється композитором майже безкоштовно. */
     @keyframes pulse{
-      0%{filter:drop-shadow(0 0 1px var(--alert-glow));}
-      50%{filter:drop-shadow(0 0 6px var(--alert-glow));}
-      100%{filter:drop-shadow(0 0 1px var(--alert-glow));}
+      0%, 100%{fill-opacity:1;}
+      50%{fill-opacity:.6;}
     }
     .region-label {
       fill: var(--text);
@@ -298,8 +309,8 @@
     <button id="proxyBtn">Застосувати</button>
     <div class="api-status" id="telegramApiStatus">
       РФ-регіони: неофіційні дані з Telegram-каналів
-      <a href="https://t.me/s/kupolrussia" target="_blank" rel="noopener noreferrer" style="color:var(--accent);">kupolrussia</a> та
-      <a href="https://t.me/s/lpr1_treugolnik" target="_blank" rel="noopener noreferrer" style="color:var(--accent);">lpr1_treugolnik</a>
+      <a href="https://t.me/s/kupolrussia" target="_blank" rel="noopener" style="color:var(--accent);">kupolrussia</a> та
+      <a href="https://t.me/s/lpr1_treugolnik" target="_blank" rel="noopener" style="color:var(--accent);">lpr1_treugolnik</a>
       — стан рахується й зберігається на самому Worker'і (KV), сайт лише читає /state. Якщо колись зміниш Worker — онови URL тут і натисни «Застосувати».
     </div>
   </div>
@@ -803,6 +814,21 @@
     mapGroup.attr("transform", `translate(${currentTranslate[0]},${currentTranslate[1]}) scale(${currentScale})`);
   }
 
+  // Батчимо часті події (drag/touch/wheel можуть віддавати десятки подій
+  // за секунду) в один виклик на кадр через requestAnimationFrame — інакше
+  // браузер робить зайву роботу з перерахунку/малювання частіше, ніж
+  // екран фізично встигає це показати, що й дає відчуття "лагів" та
+  // зайвий підігрів CPU/батареї, особливо на телефонах.
+  let rafScheduled = false;
+  function scheduleUpdateTransform() {
+    if (rafScheduled) return;
+    rafScheduled = true;
+    requestAnimationFrame(() => {
+      updateTransform();
+      rafScheduled = false;
+    });
+  }
+
   function zoomAroundPoint(newScaleRaw, pointX, pointY) {
     const newScale = clampScale(newScaleRaw);
     if (newScale === currentScale) return;
@@ -810,7 +836,7 @@
     currentTranslate[0] = pointX - (pointX - currentTranslate[0]) * ratio;
     currentTranslate[1] = pointY - (pointY - currentTranslate[1]) * ratio;
     currentScale = newScale;
-    updateTransform();
+    scheduleUpdateTransform();
   }
 
   document.getElementById("zoomIn").addEventListener("click", () => {
@@ -827,8 +853,18 @@
 
   const mapContainer = document.getElementById("mapContainer");
 
+  // getBoundingClientRect() змушує браузер синхронно перерахувати layout
+  // (forced reflow) — дорога операція, якщо викликати її на кожен wheel/touch
+  // event. Кешуємо і оновлюємо лише при зміні розміру вікна/контейнера.
+  let cachedRect = mapContainer.getBoundingClientRect();
+  function refreshCachedRect() { cachedRect = mapContainer.getBoundingClientRect(); }
+  window.addEventListener("resize", refreshCachedRect);
+  if (window.ResizeObserver) {
+    new ResizeObserver(refreshCachedRect).observe(mapContainer);
+  }
+
   function clientToViewBox(clientX, clientY) {
-    const rect = mapContainer.getBoundingClientRect();
+    const rect = cachedRect;
     return [
       (clientX - rect.left) * (width / rect.width),
       (clientY - rect.top) * (height / rect.height)
@@ -859,7 +895,7 @@
     const dx = e.clientX - startX;
     const dy = e.clientY - startY;
     currentTranslate = [startTranslate[0] + dx, startTranslate[1] + dy];
-    updateTransform();
+    scheduleUpdateTransform();
   };
 
   const onMouseUp = () => {
@@ -896,7 +932,7 @@
       const dx = e.touches[0].clientX - touchState.startX;
       const dy = e.touches[0].clientY - touchState.startY;
       currentTranslate = [touchState.startTranslate[0] + dx, touchState.startTranslate[1] + dy];
-      updateTransform();
+      scheduleUpdateTransform();
     } else if (touchState.mode === "zoom" && e.touches.length === 2) {
       const newDist = touchDist(e.touches[0], e.touches[1]);
       const ratio = newDist / touchState.startDist;

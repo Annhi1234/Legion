@@ -780,7 +780,10 @@
   });
 
   telegramPollTimer = setInterval(pollTelegramSources, TELEGRAM_POLL_MS);
-  pollTelegramSources();
+  // Перший виклик pollTelegramSources() відбувається НЕ тут, а в loadData()
+  // одразу після renderMap() — щоб currentState вже був заповнений на момент
+  // першого оновлення (інакше воно тихо ігнорувалось через гонитву, і
+  // тривоги з'являлись лише через 30 сек, на наступному циклі poll'у).
 
   // ===== Масштабування та панорамування з обмеженнями =====
   function clampScale(s) {
@@ -1009,6 +1012,13 @@
       }
 
       renderMap(processedFeatures);
+
+      // Карта і currentState вже готові — тепер можна безпечно підтягнути
+      // повітряні тривоги з Worker'а. Раніше цей виклик відбувався ДО того,
+      // як currentState заповнювався (гонитва), через що перше оновлення
+      // тихо ігнорувалось і тривоги з'являлись лише через 30 сек, на
+      // наступному циклі poll'у.
+      pollTelegramSources();
     } catch (error) {
       console.error(error);
       document.getElementById("loadingOverlay").textContent = 'Помилка завантаження геоданих. Перевірте мережу.';

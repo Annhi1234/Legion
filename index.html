@@ -941,8 +941,8 @@
         const item = document.createElement("div");
         item.className = "history-item";
         const durText = h.end
-          ? fmtDuration((h.end - h.start) / 60000)
-          : "триває вже " + fmtDuration((now - h.start) / 60000);
+          ? "Була " + fmtDuration((h.end - h.start) / 60000)
+          : "Триває " + fmtDuration((now - h.start) / 60000);
         item.innerHTML = `<span>${fmtTime(h.start)}</span><span class="dur">${durText}</span>`;
         histEl.appendChild(item);
       });

@@ -19,6 +19,9 @@
       --alert:#c62828;
       --alert-glow:rgba(198,40,40,.55);
       --alert-border:#ff5252;
+      --alert-critical:#6b0f0f;
+      --alert-critical-glow:rgba(107,15,15,.8);
+      --alert-critical-border:#a11d1d;
       --accent:#3b82f6;
       --unknown:#161c26;
       --unknown-border:#2a3242;
@@ -113,6 +116,7 @@
     .dot{width:11px; height:11px; border-radius:3px; display:inline-block;}
     .dot.safe{background:var(--safe); border:1px solid var(--safe-border);}
     .dot.alert{background:var(--alert); box-shadow:0 0 6px var(--alert-glow);}
+    .dot.critical{background:var(--alert-critical); box-shadow:0 0 6px var(--alert-critical-glow);}
     .dot.unknown{background:var(--unknown); border:1px dashed var(--unknown-border);}
 
     .map-container {
@@ -151,6 +155,14 @@
       animation: pulse 1.6s ease-in-out infinite;
       will-change: fill-opacity;
     }
+    /* Тривога триває 3+ години поспіль — колір стає ще темнішим і глибшим,
+       щоб візуально відрізняти "затяжні" тривоги від щойно оголошених. */
+    .region-path.alert-critical {
+      fill: var(--alert-critical);
+      stroke: var(--alert-critical-border);
+      animation: pulse-critical 1.6s ease-in-out infinite;
+      will-change: fill-opacity;
+    }
     .region-path.unknown {
       fill: var(--unknown);
       stroke: var(--unknown-border);
@@ -164,6 +176,10 @@
     @keyframes pulse{
       0%, 100%{fill-opacity:1;}
       50%{fill-opacity:.6;}
+    }
+    @keyframes pulse-critical{
+      0%, 100%{fill-opacity:1;}
+      50%{fill-opacity:.7;}
     }
     .region-label {
       fill: var(--text);
@@ -253,6 +269,7 @@
       border-radius:8px;
     }
     .status-line.is-alert{background:rgba(198,40,40,.18); color:#ff8a8a; border:1px solid var(--alert-border);}
+    .status-line.is-critical{background:rgba(107,15,15,.35); color:#ff9d9d; border:1px solid var(--alert-critical-border);}
     .status-line.is-safe{background:rgba(76,175,80,.12); color:#8fd99a; border:1px solid #2c4a30;}
     .status-line.is-unknown{background:rgba(139,150,165,.12); color:var(--muted); border:1px solid var(--unknown-border);}
     .modal h3{
@@ -293,16 +310,11 @@
 </header>
 
 <div class="layout">
-  <!-- Технічні налаштування (токен API, проксі) сховані від звичайних відвідувачів.
-       Значення вже вписані в код і працюють без цієї панелі. Щоб знову показати
-       (наприклад, для налагодження), приберіть style="display:none" з обох .api-bar нижче. -->
-  <div class="api-bar" style="display:none;">
-    <strong style="white-space:nowrap;">🇺🇦 alerts.in.ua токен:</strong>
-    <input type="password" id="alertsTokenInput" placeholder="Встав токен з devs.alerts.in.ua">
-    <button id="alertsTokenBtn">Підключити</button>
-    <div class="api-status" id="alertsApiStatus">Не підключено — Донецька/Луганська/Крим/Севастополь без даних.</div>
-  </div>
-
+  <!-- Технічне налаштування (проксі) сховане від звичайних відвідувачів.
+       Значення вже вписане в код і працює без цієї панелі. Щоб знову показати
+       (наприклад, для налагодження), приберіть style="display:none" з .api-bar нижче.
+       Українські області (зокрема Херсонська, Запорізька) поки не відстежуються —
+       на мапі й у джерелах даних лишились лише регіони РФ. -->
   <div class="api-bar" style="display:none;">
     <strong style="white-space:nowrap;">📡 CORS-проксі:</strong>
     <input type="text" id="proxyInput" value="https://red-bonus-817d.andrej3315a.workers.dev" placeholder="https://ТВІЙ-WORKER.workers.dev">
@@ -319,6 +331,7 @@
     <div class="legend">
       <span><i class="dot safe"></i> спокійно</span>
       <span><i class="dot alert"></i> повітряна тривога</span>
+      <span><i class="dot critical"></i> тривога 3+ год</span>
       <span><i class="dot unknown"></i> немає даних / очікування</span>
       <span style="margin-left:auto;color:var(--muted);font-size:11px;">Скрол / щипок для масштабування · Перетягування для панорамування</span>
     </div>
@@ -514,62 +527,211 @@
     fitTranslate = [width / 2 - s * cx, height / 2 - s * cy];
   }
 
-  // ===== Реальні джерела тривог =====
-  // 1) Україна + окуповані території (Донецька, Луганська, АР Крим, Севастополь) —
-  //    офіційний API alerts.in.ua. Потрібен особистий токен: https://devs.alerts.in.ua
-  // 2) Прикордонні області РФ — публічного офіційного API немає, тому статус
-  //    визначається евристично за повідомленнями двох Telegram-каналів моніторингу.
-  //    Це НЕОФІЦІЙНІ дані: прямий fetch із браузера до t.me, найімовірніше,
-  //    заблокує CORS — для production потрібен власний проксі-сервер.
+  // ===== Реальне джерело тривог =====
+  // Регіони РФ — публічного офіційного API немає, тому статус визначається
+  // евристично за повідомленнями двох Telegram-каналів моніторингу (в т.ч.
+  // розпізнавання слова "отбой" для зняття тривоги — рахує Worker).
+  // Це НЕОФІЦІЙНІ дані: прямий fetch із браузера до t.me, найімовірніше,
+  // заблокує CORS — тому дані йдуть через власний Cloudflare Worker-проксі.
 
   // За замовчуванням беремо проксі з поля вводу (там уже вписаний робочий
   // Cloudflare Worker) — так карта одразу працює після викладення на GitHub
   // Pages чи будь-де ще, без ручного натискання кнопки при кожному візиті.
-  let alertsApiToken = "";
-  let alertsPollTimer = null;
-
   let telegramProxyPrefix = (document.getElementById("proxyInput") || {}).value || "";
   let telegramPollTimer = null;
   const TELEGRAM_CHANNELS = ["kupolrussia", "lpr1_treugolnik"];
   const TELEGRAM_POLL_MS = 30000; // не частіше раз на хвилину — поважаємо чужий сервер
+  const CRITICAL_ALERT_MS = 3 * 60 * 60 * 1000; // тривога 3+ год — колір стає ще темнішим
 
-  // Точний офіційний порядок 27 областей у відповіді alerts.in.ua
-  const ALERTS_OBLAST_ORDER = [
-    "Автономна Республіка Крим", "Волинська область", "Вінницька область", "Дніпропетровська область",
-    "Донецька область", "Житомирська область", "Закарпатська область", "Запорізька область",
-    "Івано-Франківська область", "м. Київ", "Київська область", "Кіровоградська область",
-    "Луганська область", "Львівська область", "Миколаївська область", "Одеська область",
-    "Полтавська область", "Рівненська область", "м. Севастополь", "Сумська область",
-    "Тернопільська область", "Харківська область", "Херсонська область", "Хмельницька область",
-    "Черкаська область", "Чернівецька область", "Чернігівська область"
-  ];
+  // Чи триває тривога вже 3+ години поспіль (для темнішого кольору на мапі й у модалці)
+  function isCriticalAlert(st) {
+    return st.status === "alert" && !!st.since && (Date.now() - st.since.getTime()) >= CRITICAL_ALERT_MS;
+  }
 
-  // Наша внутрішня назва -> офіційна назва в alerts.in.ua
-  const REGION_TO_ALERTS_API_NAME = {
-    "Донецька область": "Донецька область",
-    "Луганська область": "Луганська область",
-    "АР Крим": "Автономна Республіка Крим",
-    "Севастополь": "м. Севастополь"
-  };
+  // Список регіонів РФ, статус яких відстежується через Worker (/state).
+  // Розширено з 6 прикордонних до всіх 83 суб'єктів РФ — фактичний парсинг
+  // ключових слів відбувається на боці Worker'а (єдине джерело правди),
+  // тут потрібен лише той самий набір НАЗВ, щоб знати, які регіони
+  // підписувати як "джерело: telegram" у модальному вікні.
+const RU_REGION_KEYWORDS = {
+  "Республіка Адигея": true,
+  "Республіка Алтай": true,
+  "Алтайський край": true,
+  "Амурська область": true,
+  "Архангельська область": true,
+  "Астраханська область": true,
+  "Республіка Башкортостан": true,
+  "Бєлгородська область": true,
+  "Брянська область": true,
+  "Республіка Бурятія": true,
+  "Владимирська область": true,
+  "Волгоградська область": true,
+  "Вологодська область": true,
+  "Воронезька область": true,
+  "Республіка Дагестан": true,
+  "Єврейська автономна область": true,
+  "Забайкальський край": true,
+  "Іванівська область": true,
+  "Республіка Інгушетія": true,
+  "Іркутська область": true,
+  "Кабардино-Балкарська Республіка": true,
+  "Калінінградська область": true,
+  "Калузька область": true,
+  "Камчатський край": true,
+  "Карачаєво-Черкеська Республіка": true,
+  "Кемеровська область": true,
+  "Кіровська область": true,
+  "Костромська область": true,
+  "Краснодарський край": true,
+  "Красноярський край": true,
+  "Курганська область": true,
+  "Курська область": true,
+  "Ленінградська область": true,
+  "Липецька область": true,
+  "Магаданська область": true,
+  "Республіка Марій Ел": true,
+  "Москва (місто)": true,
+  "Московська область": true,
+  "Мурманська область": true,
+  "Ненецький автономний округ": true,
+  "Нижегородська область": true,
+  "Новгородська область": true,
+  "Новосибірська область": true,
+  "Омська область": true,
+  "Оренбурзька область": true,
+  "Орловська область": true,
+  "Пензенська область": true,
+  "Пермський край": true,
+  "Приморський край": true,
+  "Псковська область": true,
+  "Республіка Калмикія": true,
+  "Республіка Карелія": true,
+  "Республіка Комі": true,
+  "Республіка Мордовія": true,
+  "Республіка Саха (Якутія)": true,
+  "Республіка Хакасія": true,
+  "Ростовська область": true,
+  "Рязанська область": true,
+  "Самарська область": true,
+  "Санкт-Петербург": true,
+  "Саратовська область": true,
+  "Сахалінська область": true,
+  "Свердловська область": true,
+  "Республіка Північна Осетія — Аланія": true,
+  "Смоленська область": true,
+  "Ставропольський край": true,
+  "Тамбовська область": true,
+  "Республіка Татарстан": true,
+  "Тверська область": true,
+  "Томська область": true,
+  "Тульська область": true,
+  "Республіка Тива": true,
+  "Тюменська область": true,
+  "Удмуртська Республіка": true,
+  "Ульяновська область": true,
+  "Хабаровський край": true,
+  "Ханти-Мансійський автономний округ — Югра": true,
+  "Челябінська область": true,
+  "Чеченська Республіка": true,
+  "Республіка Чувашія": true,
+  "Чукотський автономний округ": true,
+  "Ямало-Ненецький автономний округ": true,
+  "Ярославська область": true,
+};
 
-  // Ключові слова для пошуку згадок прикордонних областей РФ у Telegram-постах
-  const RU_REGION_KEYWORDS = {
-    "Бєлгородська область": ["белгород"],
-    "Курська область": ["курск"],
-    "Брянська область": ["брянск"],
-    "Воронезька область": ["воронеж"],
-    "Ростовська область": ["ростов"],
-    "Краснодарський край": ["краснодар", "кубан"]
-  };
-  const ALL_CLEAR_WORDS = ["отбой"];
+  // Точне зіставлення "назва в geojson (російською)" -> "наша назва
+  // українською". Замінює попередній підхід із includes() на 6 назвах —
+  // тепер коректно охоплює всі 83 суб'єкти РФ без ризику плутанини між
+  // схожими короткими підрядками.
+const RU_GEOJSON_NAME_MAP = {
+  "Адыгея": "Республіка Адигея",
+  "Алтай": "Республіка Алтай",
+  "Алтайский край": "Алтайський край",
+  "Амурская область": "Амурська область",
+  "Архангельская область": "Архангельська область",
+  "Астраханская область": "Астраханська область",
+  "Башкортостан": "Республіка Башкортостан",
+  "Белгородская область": "Бєлгородська область",
+  "Брянская область": "Брянська область",
+  "Бурятия": "Республіка Бурятія",
+  "Владимирская область": "Владимирська область",
+  "Волгоградская область": "Волгоградська область",
+  "Вологодская область": "Вологодська область",
+  "Воронежская область": "Воронезька область",
+  "Дагестан": "Республіка Дагестан",
+  "Еврейская автономная область": "Єврейська автономна область",
+  "Забайкальский край": "Забайкальський край",
+  "Ивановская область": "Іванівська область",
+  "Ингушетия": "Республіка Інгушетія",
+  "Иркутская область": "Іркутська область",
+  "Кабардино-Балкарская республика": "Кабардино-Балкарська Республіка",
+  "Калининградская область": "Калінінградська область",
+  "Калужская область": "Калузька область",
+  "Камчатский край": "Камчатський край",
+  "Карачаево-Черкесская республика": "Карачаєво-Черкеська Республіка",
+  "Кемеровская область": "Кемеровська область",
+  "Кировская область": "Кіровська область",
+  "Костромская область": "Костромська область",
+  "Краснодарский край": "Краснодарський край",
+  "Красноярский край": "Красноярський край",
+  "Курганская область": "Курганська область",
+  "Курская область": "Курська область",
+  "Ленинградская область": "Ленінградська область",
+  "Липецкая область": "Липецька область",
+  "Магаданская область": "Магаданська область",
+  "Марий Эл": "Республіка Марій Ел",
+  "Москва": "Москва (місто)",
+  "Московская область": "Московська область",
+  "Мурманская область": "Мурманська область",
+  "Ненецкий автономный округ": "Ненецький автономний округ",
+  "Нижегородская область": "Нижегородська область",
+  "Новгородская область": "Новгородська область",
+  "Новосибирская область": "Новосибірська область",
+  "Омская область": "Омська область",
+  "Оренбургская область": "Оренбурзька область",
+  "Орловская область": "Орловська область",
+  "Пензенская область": "Пензенська область",
+  "Пермский край": "Пермський край",
+  "Приморский край": "Приморський край",
+  "Псковская область": "Псковська область",
+  "Республика Калмыкия": "Республіка Калмикія",
+  "Республика Карелия": "Республіка Карелія",
+  "Республика Коми": "Республіка Комі",
+  "Республика Мордовия": "Республіка Мордовія",
+  "Республика Саха (Якутия)": "Республіка Саха (Якутія)",
+  "Республика Хакасия": "Республіка Хакасія",
+  "Ростовская область": "Ростовська область",
+  "Рязанская область": "Рязанська область",
+  "Самарская область": "Самарська область",
+  "Санкт-Петербург": "Санкт-Петербург",
+  "Саратовская область": "Саратовська область",
+  "Сахалинская область": "Сахалінська область",
+  "Свердловская область": "Свердловська область",
+  "Северная Осетия - Алания": "Республіка Північна Осетія — Аланія",
+  "Смоленская область": "Смоленська область",
+  "Ставропольский край": "Ставропольський край",
+  "Тамбовская область": "Тамбовська область",
+  "Татарстан": "Республіка Татарстан",
+  "Тверская область": "Тверська область",
+  "Томская область": "Томська область",
+  "Тульская область": "Тульська область",
+  "Тыва": "Республіка Тива",
+  "Тюменская область": "Тюменська область",
+  "Удмуртская республика": "Удмуртська Республіка",
+  "Ульяновская область": "Ульяновська область",
+  "Хабаровский край": "Хабаровський край",
+  "Ханты-Мансийский автономный округ - Югра": "Ханти-Мансійський автономний округ — Югра",
+  "Челябинская область": "Челябінська область",
+  "Чеченская республика": "Чеченська Республіка",
+  "Чувашия": "Республіка Чувашія",
+  "Чукотский автономный округ": "Чукотський автономний округ",
+  "Ямало-Ненецкий автономный округ": "Ямало-Ненецький автономний округ",
+  "Ярославская область": "Ярославська область",
+};
 
   function isRussianTrackedRegion(name) {
     return Object.prototype.hasOwnProperty.call(RU_REGION_KEYWORDS, name);
   }
-  function isUkraineTrackedRegion(name) {
-    return Object.prototype.hasOwnProperty.call(REGION_TO_ALERTS_API_NAME, name);
-  }
-
   // Усі регіони стартують у статусі «немає даних» — нічого не вигадуємо,
   // чекаємо на перший реальний результат з відповідного джерела.
   function buildInitialState(features) {
@@ -581,7 +743,7 @@
         status: "unknown", // 'alert' | 'safe' | 'unknown'
         since: null,
         note: "",
-        source: isUkraineTrackedRegion(name) ? "alerts.in.ua" : (isRussianTrackedRegion(name) ? "telegram" : "немає джерела"),
+        source: isRussianTrackedRegion(name) ? "telegram" : "немає джерела",
         history: [] // { start: Date, end: Date|null } — накопичується лише за час, поки сторінка відкрита
       };
     });
@@ -622,11 +784,23 @@
   function updateRegionVisual(name) {
     const st = currentState[name];
     if (!st) return;
+    const critical = isCriticalAlert(st);
     regionsGroup.selectAll("path")
       .filter(d => d.properties.cleanName === name)
       .classed("alert", st.status === "alert")
+      .classed("alert-critical", critical)
       .classed("unknown", st.status === "unknown");
   }
+
+  // Поки сторінка відкрита, статуси оновлюються лише коли приходять нові дані
+  // з Worker'а (кожні TELEGRAM_POLL_MS). Але поріг "3+ години" залежить від
+  // часу самого по собі — тому окремо, раз на хвилину, перемальовуємо колір
+  // усіх активних тривог, навіть якщо жодних нових даних не надійшло.
+  setInterval(() => {
+    Object.keys(currentState).forEach(name => {
+      if (currentState[name].status === "alert") updateRegionVisual(name);
+    });
+  }, 60000);
 
   function renderMap(features) {
     allFeatures = features;
@@ -673,59 +847,7 @@
     setTimeout(() => overlay.remove(), 400);
   }
 
-  // ===== Джерело 1: офіційний API alerts.in.ua (Україна + окуповані території) =====
-  function setAlertsApiStatus(text) {
-    const el = document.getElementById("alertsApiStatus");
-    if (el) el.textContent = text;
-  }
-
-  async function pollAlertsApi() {
-    if (!alertsApiToken) return;
-    try {
-      const res = await fetch("https://api.alerts.in.ua/v1/iot/active_air_raid_alerts_by_oblast.json", {
-        headers: { "Authorization": "Bearer " + alertsApiToken }
-      });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const letters = await res.json();
-      if (typeof letters !== "string" || letters.length < ALERTS_OBLAST_ORDER.length) {
-        throw new Error("Неочікуваний формат відповіді");
-      }
-
-      const now = new Date();
-      Object.keys(REGION_TO_ALERTS_API_NAME).forEach(ourName => {
-        const apiName = REGION_TO_ALERTS_API_NAME[ourName];
-        const idx = ALERTS_OBLAST_ORDER.indexOf(apiName);
-        if (idx === -1) return;
-        const letter = letters[idx];
-        const isAlert = (letter === "A" || letter === "P");
-        const st = currentState[ourName];
-        if (!st) return;
-        const wasAlert = st.status === "alert";
-        if (isAlert && !wasAlert) st.since = now;
-        logHistoryTransition(st, wasAlert, isAlert, now);
-        st.status = isAlert ? "alert" : "safe";
-        st.note = "";
-        updateRegionVisual(ourName);
-      });
-
-      setAlertsApiStatus("Оновлено " + fmtTime(now) + " (alerts.in.ua)");
-    } catch (err) {
-      console.error("alerts.in.ua error:", err);
-      setAlertsApiStatus("⚠ Помилка: " + err.message + ". Перевірте токен.");
-    }
-  }
-
-  document.getElementById("alertsTokenBtn").addEventListener("click", () => {
-    const val = document.getElementById("alertsTokenInput").value.trim();
-    if (!val) { setAlertsApiStatus("Введіть токен з devs.alerts.in.ua"); return; }
-    alertsApiToken = val;
-    if (alertsPollTimer) clearInterval(alertsPollTimer);
-    setAlertsApiStatus("⏳ Підключення...");
-    pollAlertsApi();
-    alertsPollTimer = setInterval(pollAlertsApi, 30000);
-  });
-
-  // ===== Джерело 2: Telegram-канали для прикордонних областей РФ (неофіційно) =====
+  // ===== Джерело даних: Telegram-канали моніторингу тривог по РФ (неофіційно) =====
   function setTelegramApiStatus(text) {
     const el = document.getElementById("telegramApiStatus");
     if (el) el.textContent = text;
@@ -951,8 +1073,10 @@
     const statusEl = document.getElementById("modalStatus");
 
     if (st.status === "alert") {
-      statusEl.className = "status-line is-alert";
-      statusEl.textContent = "⚠ Тривога" + (st.since ? " з " + fmtTime(st.since) : "");
+      const critical = isCriticalAlert(st);
+      statusEl.className = "status-line " + (critical ? "is-critical" : "is-alert");
+      const durationText = st.since ? " · триває " + fmtDuration((Date.now() - st.since.getTime()) / 60000) : "";
+      statusEl.textContent = "⚠ Тривога" + (st.since ? " з " + fmtTime(st.since) : "") + durationText;
     } else if (st.status === "safe") {
       statusEl.className = "status-line is-safe";
       statusEl.textContent = "Зараз спокійно";
@@ -992,7 +1116,9 @@
   // ======== СИНХРОННЕ ЗАВАНТАЖЕННЯ ТА ПЕРЕКЛАД ГЕОДАНИХ ========
   async function loadData() {
     try {
-      // 1. Завантажуємо мапу Східної Європи / РФ
+      // 1. Завантажуємо мапу РФ — ТЕПЕР УСІ 83 суб'єкти, без обрізання по
+      // довготі (раніше карта показувала лише європейську частину до
+      // Уралу — Сибір і Далекий Схід відкидались фільтром centroid[0]<260).
       const response = await fetch("https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/russia.geojson");
       if (!response.ok) throw new Error('Не вдалося завантажити базову мапу');
       const data = await response.json();
@@ -1000,54 +1126,19 @@
 
       let processedFeatures = [];
 
-      // Тимчасова проєкція 1:1, лише щоб порахувати приблизні межі для фільтрації Сибіру
-      const probeProjection = d3.geo.conicEqualArea().parallels([45, 65]).scale(150).translate([0, 0]);
-      const probePath = d3.geo.path().projection(probeProjection);
-
       rawFeatures.forEach(f => {
-        let name = f.properties.name || f.properties.region_name_rus || "";
-
-        // Словник перекладу базових прикордонних областей українською
-        if(name.includes("Белгород")) name = "Бєлгородська область";
-        if(name.includes("Курск")) name = "Курська область";
-        if(name.includes("Брянск")) name = "Брянська область";
-        if(name.includes("Воронеж")) name = "Воронезька область";
-        if(name.includes("Ростов")) name = "Ростовська область";
-        if(name.includes("Краснодар")) name = "Краснодарський край";
-
+        const rawName = f.properties.name || f.properties.region_name_rus || "";
+        // Пряме зіставлення по точній назві з geojson замість фрагментного
+        // includes() на 6 назвах — тепер покриває всі 83 суб'єкти РФ.
+        const name = RU_GEOJSON_NAME_MAP[rawName] || rawName;
         f.properties.cleanName = name;
-
-        // Обрізаємо за довготою (лише європейська частина до Уралу)
-        const centroid = probePath.centroid(f);
-        if (centroid && !isNaN(centroid[0]) && centroid[0] < 260) {
-           processedFeatures.push(f);
-        }
+        processedFeatures.push(f);
       });
 
-      // 2. Завантажуємо мапу України для інтеграції окупованих територій
-      const ukraineResp = await fetch("https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/ukraine.geojson");
-      if (ukraineResp.ok) {
-        const ukraineData = await ukraineResp.json();
-        const ukraineFeatures = ukraineData.features || [];
-
-        ukraineFeatures.forEach(f => {
-          const name1 = f.properties.name || "";
-          const name2 = f.properties.NAME_1 || "";
-
-          let targetName = "";
-          if (name1.includes("Donets") || name2.includes("Донец")) targetName = "Донецька область";
-          if (name1.includes("Luhan") || name2.includes("Луган")) targetName = "Луганська область";
-          if (name1.includes("Crim") || name2.includes("Крым") || name1.includes("Krym")) targetName = "АР Крим";
-          if (name1.includes("Sevast") || name2.includes("Севастоп")) targetName = "Севастополь";
-
-          if (targetName) {
-            f.properties.cleanName = targetName;
-            processedFeatures.push(f);
-          }
-        });
-      }
-
       renderMap(processedFeatures);
+
+      // Українські області (Донецька, Луганська, Крим, Запорізька, Херсонська)
+      // тимчасово не додаються на мапу й не відстежуються — лишається лише РФ.
 
       // Карта і currentState вже готові — тепер можна безпечно підтягнути
       // повітряні тривоги з Worker'а. Раніше цей виклик відбувався ДО того,

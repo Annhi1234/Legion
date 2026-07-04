@@ -750,16 +750,11 @@ const RU_GEOJSON_NAME_MAP = {
     return state;
   }
 
-  // Записує зміну статусу в історію: відкриває новий запис при вході в тривогу,
-  // закриває останній відкритий запис при виході з тривоги
-  function logHistoryTransition(st, wasAlert, isAlert, when) {
-    if (!wasAlert && isAlert) {
-      st.history.push({ start: when, end: null });
-    } else if (wasAlert && !isAlert) {
-      const last = st.history[st.history.length - 1];
-      if (last && last.end === null) last.end = when;
-    }
-  }
+  // Примітка: історія тривог (history) для регіонів РФ повністю приходить
+  // готовою з Worker'а (/state) — сайт лише конвертує рядки дат у Date
+  // (див. pollTelegramSources). Локальний білдер історії тут більше не
+  // потрібен (використовувався раніше для alerts.in.ua-джерела, якого
+  // зараз немає).
 
   function fmtTime(d) {
     return d.toLocaleString("uk-UA", {day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit"});
@@ -887,7 +882,28 @@ const RU_GEOJSON_NAME_MAP = {
     Object.keys(RU_REGION_KEYWORDS).forEach(regionName => {
       const info = regions[regionName];
       const st = currentState[regionName];
-      if (!info || !st) return;
+      if (!st) return;
+
+      if (!info) {
+        // БАГ, ВИПРАВЛЕНО: Worker пише в regions[...] ЛИШЕ ті регіони, які
+        // хоч раз згадувались у Telegram-каналах (kupolrussia,
+        // lpr1_treugolnik). Ці два канали фактично покривають лише
+        // частину з 83 суб'єктів РФ — решта (далекі/непричетні до
+        // подій регіони) в KV просто ніколи не з'являються. Раніше через
+        // "if (!info || !st) return;" такі регіони назавжди лишались у
+        // початковому статусі "unknown" (сірий, штрихований) — навіть
+        // через дні роботи сайту. Це виглядало так, ніби вони "ніколи не
+        // можуть бути в тривозі" / ніби моніторинг для них не працює.
+        // Насправді ж "жодної згадки" для активно відстежуваного регіону
+        // означає "тривоги не було", тому тепер такі регіони показуються
+        // як "спокійно" (safe) одразу після ПЕРШОЇ успішної відповіді
+        // Worker'а — а не залишаються в підвішеному "невідомо" стані.
+        if (st.status === "unknown") {
+          st.status = "safe";
+          updateRegionVisual(regionName);
+        }
+        return;
+      }
 
       st.status = info.status === "alert" ? "alert" : (info.status === "safe" ? "safe" : "unknown");
       st.since = info.since ? new Date(info.since) : null;

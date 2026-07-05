@@ -145,6 +145,15 @@
       stroke-width: 0.6px;
       cursor: pointer;
       transition: fill .2s, filter .15s ease;
+      /* БАГ, ВИПРАВЛЕНО: без цього рамка регіону масштабувалась РАЗОМ з
+         мапою (бо вона всередині transform:scale() групи) — при глибокому
+         зумі товщина рамки в 0.6px роздувалась пропорційно (напр. до
+         ~7-8px на MAX_SCALE), і на дрібних сусідніх регіонах (кавказькі
+         республіки, Москва/Московська обл.) товста рамка буквально
+         "з'їдала" площу сусідів — саме це й виглядало як "регіони
+         накладаються один на одного". non-scaling-stroke тримає товщину
+         рамки СТАЛОЮ в екранних пікселях незалежно від рівня зуму. */
+      vector-effect: non-scaling-stroke;
     }
     .region-path:hover {
       filter: brightness(1.25);
@@ -369,9 +378,13 @@
   const width = 1000;
   const height = 600;
 
-  // Межі масштабування: 1 = мапа повністю влазить у вікно (далі — обмеження)
+  // Межі масштабування: 1 = мапа повністю влазить у вікно (далі — обмеження).
+  // MAX_SCALE піднято з 6 до 22 — при 6 дрібні сусідні регіони (кавказькі
+  // республіки, Москва/Московська обл.) на телефоні фізично неможливо
+  // впевнено розрізнити пальцем; тепер можна закластись глибше, поки
+  // потрібний регіон не займе достатньо місця на екрані для точного тапу.
   const MIN_SCALE = 1;
-  const MAX_SCALE = 6;
+  const MAX_SCALE = 22;
 
   let currentScale = MIN_SCALE;
   let currentTranslate = [0, 0];
@@ -416,6 +429,13 @@
   const mapGroup = svg.append("g").attr("id", "mapGroup");
   const regionsGroup = mapGroup.append("g").attr("id", "regionsLayer");
   const labelsGroup = mapGroup.append("g").attr("id", "labelsLayer");
+
+  // Заповнюються в renderMap(): D3-виборка текстових підписів і базові
+  // (немасштабовані) центроїди/площі регіонів — потрібні для
+  // updateLabelVisibility() (декластеризація підписів, що накладаються).
+  let labelSelection = null;
+  let labelInfos = [];
+  let lastLabelScale = null;
 
   function rotateXY(x, y, theta) {
     const cos = Math.cos(theta), sin = Math.sin(theta);
@@ -817,24 +837,41 @@ const RU_GEOJSON_NAME_MAP = {
         openModal(d.properties.cleanName);
       });
 
-    // Накладаємо підписи центрів
-    labelsGroup.selectAll("text")
+    // Накладаємо підписи центрів. ВИПРАВЛЕНО: раніше підпис мав фіксований
+    // розмір і позицію в системі координат мапи — при масштабуванні групи
+    // (transform: scale()) текст роздувався РАЗОМ з мапою (на MAX_SCALE
+    // ставав величезним), а дрібні сусідні регіони (кавказькі республіки,
+    // Москва/Московська обл. — центри лише за ~20-150 км одне від одного
+    // на мапі, що охоплює всю РФ) мали підписи, що просто друкувались один
+    // на одному, нечитабельно. Тепер:
+    //  1) кожен підпис має ВЛАСНИЙ зворотний масштаб scale(1/currentScale)
+    //     — розмір тексту на екрані лишається сталим незалежно від зуму;
+    //  2) updateLabelVisibility() ховає підписи дрібних регіонів, якщо
+    //     вони зараз (на поточному зумі) впритул до вже показаного підпису
+    //     більшого регіону — і показує їх знову, щойно користувач
+    //     наближається достатньо, щоб між ними з'явився простір.
+    labelSelection = labelsGroup.selectAll("text")
       .data(features)
       .enter()
       .append("text")
       .attr("class", "region-label")
-      .attr("transform", function(d) {
-        const centroid = pathGenerator.centroid(d);
-        return centroid && !isNaN(centroid[0]) ? `translate(${centroid[0]},${centroid[1]})` : "translate(-100,-100)";
-      })
       .text(function(d) {
         let name = d.properties.cleanName || "";
         name = name.replace(/ська область|область|Республіка|край|автономний округ|город/g, '').trim();
         return name.length > 7 ? name.substring(0, 5) + '..' : name;
       });
 
+    // Базові (немасштабовані) центроїди й площі — рахуються ОДИН раз тут,
+    // а не на кожен кадр зуму/панорамування.
+    labelInfos = features.map(d => {
+      const c = pathGenerator.centroid(d);
+      const valid = !!(c && isFinite(c[0]) && isFinite(c[1]));
+      return { cx: valid ? c[0] : 0, cy: valid ? c[1] : 0, area: pathGenerator.area(d) || 0, valid };
+    });
+
     currentScale = MIN_SCALE;
     currentTranslate = [0, 0];
+    lastLabelScale = null; // форсуємо перший розрахунок видимості підписів
     updateTransform();
 
     const overlay = document.getElementById("loadingOverlay");
@@ -947,9 +984,57 @@ const RU_GEOJSON_NAME_MAP = {
     currentTranslate[1] = Math.min(0, Math.max(minY, currentTranslate[1]));
   }
 
+  // Greedy-декластеризація підписів: великі регіони (за площею) мають
+  // пріоритет лишатись видимими; дрібніший підпис ховається, якщо на
+  // ПОТОЧНОМУ зумі він опиняється надто близько до вже показаного.
+  // Порівняння робиться в базових (немасштабованих) координатах мапи:
+  // екранна відстань між двома підписами = їхня базова відстань помножена
+  // на currentScale, тож поріг у базових одиницях = LABEL_MIN_SCREEN_GAP /
+  // currentScale — що глибше зум, то менший поріг, то більше підписів
+  // проходить перевірку (регіони фізично розсунулись на екрані).
+  const LABEL_MIN_SCREEN_GAP = 26;
+
+  function updateLabelVisibility() {
+    if (!labelSelection || labelInfos.length === 0) return;
+    if (lastLabelScale === currentScale) return; // зум не змінювався — нема сенсу перераховувати (панорамування не впливає на відносні відстані)
+    lastLabelScale = currentScale;
+
+    const minDist = LABEL_MIN_SCREEN_GAP / currentScale;
+    const minDistSq = minDist * minDist;
+
+    const order = labelInfos.map((_, i) => i).sort((a, b) => labelInfos[b].area - labelInfos[a].area);
+    const placed = [];
+    const visible = new Array(labelInfos.length).fill(false);
+
+    order.forEach(i => {
+      const info = labelInfos[i];
+      if (!info.valid) return;
+      for (const p of placed) {
+        const dx = info.cx - p.cx, dy = info.cy - p.cy;
+        if (dx * dx + dy * dy < minDistSq) return; // колізія з уже показаним підписом — ховаємо цей
+      }
+      placed.push(info);
+      visible[i] = true;
+    });
+
+    const invScale = 1 / currentScale;
+    labelSelection
+      .style("display", (d, i) => visible[i] ? null : "none")
+      .attr("transform", (d, i) => {
+        const info = labelInfos[i];
+        if (!info.valid) return "translate(-1000,-1000)";
+        // scale(1/currentScale) — контр-масштаб: текст лишається сталого
+        // розміру на екрані незалежно від того, наскільки наближена мапа
+        // (без цього на MAX_SCALE підпис ставав величезним і сам починав
+        // "накладатись" на сусідні регіони).
+        return `translate(${info.cx},${info.cy}) scale(${invScale})`;
+      });
+  }
+
   function updateTransform() {
     clampTranslate();
     mapGroup.attr("transform", `translate(${currentTranslate[0]},${currentTranslate[1]}) scale(${currentScale})`);
+    updateLabelVisibility();
   }
 
   // Батчимо часті події (drag/touch/wheel можуть віддавати десятки подій

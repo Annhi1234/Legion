@@ -413,6 +413,14 @@
     .status-line.is-critical{background:rgba(107,15,15,.35); color:#ff9d9d; border:1px solid var(--alert-critical-border);}
     .status-line.is-safe{background:rgba(76,175,80,.12); color:#8fd99a; border:1px solid #2c4a30;}
     .status-line.is-unknown{background:rgba(139,150,165,.12); color:var(--muted); border:1px solid var(--unknown-border);}
+    .modal-note{
+      font-size:11.5px;
+      color:var(--muted);
+      margin:-6px 0 14px;
+      line-height:1.4;
+      font-style:italic;
+      word-break:break-word;
+    }
     .modal h3{
       font-size:12px;
       text-transform:uppercase;
@@ -1551,6 +1559,26 @@ const RU_GEOJSON_NAME_MAP = {
     } else {
       statusEl.className = "status-line is-unknown";
       statusEl.textContent = "Даних ще немає";
+    }
+
+    // ПРОГАЛИНА, ВИПРАВЛЕНО: Worker уже давно рахує st.note (цитата рядка
+    // з Telegram-посту, який спричинив поточний статус) — але сайт його
+    // ніде не показував, хоча дані вже приходили у /state. Виводимо його
+    // тут через textContent (НЕ innerHTML) — текст походить з зовнішнього
+    // Telegram-каналу, тож про всяк випадок рендеримо як звичайний текст,
+    // а не HTML, щоб виключити будь-яку ін'єкцію розмітки з чужого посту.
+    let noteEl = document.getElementById("modalNote");
+    if (!noteEl) {
+      noteEl = document.createElement("div");
+      noteEl.id = "modalNote";
+      noteEl.className = "modal-note";
+      statusEl.insertAdjacentElement("afterend", noteEl);
+    }
+    if (st.note && (st.status === "alert" || st.status === "safe")) {
+      noteEl.textContent = "Джерело: «" + st.note + "»";
+      noteEl.style.display = "block";
+    } else {
+      noteEl.style.display = "none";
     }
 
     const histEl = document.getElementById("modalHistory");

@@ -326,6 +326,11 @@
       stroke: rgba(0,0,0,0.8);
       stroke-width: 1.2px;
       font-weight: 600;
+      opacity: 1;
+      transition: opacity .2s ease-out;
+    }
+    .region-label.label-hidden {
+      opacity: 0;
     }
     .loading-overlay {
       position: absolute;
@@ -1013,6 +1018,7 @@ const RU_GEOJSON_NAME_MAP = {
     currentScale = MIN_SCALE;
     currentTranslate = [0, 0];
     lastLabelScale = null; // форсуємо перший розрахунок видимості підписів
+    lastLabelVisible = null;
     updateTransform();
 
     const overlay = document.getElementById("loadingOverlay");
@@ -1112,6 +1118,7 @@ const RU_GEOJSON_NAME_MAP = {
     currentScale = targetScale;
     currentTranslate = [width / 2 - info.cx * targetScale, height / 2 - info.cy * targetScale];
     lastLabelScale = null;
+    lastLabelVisible = null;
     updateTransform();
   }
 
@@ -1289,15 +1296,69 @@ const RU_GEOJSON_NAME_MAP = {
   // на currentScale, тож поріг у базових одиницях = LABEL_MIN_SCREEN_GAP /
   // currentScale — що глибше зум, то менший поріг, то більше підписів
   // проходить перевірку (регіони фізично розсунулись на екрані).
-  const LABEL_MIN_SCREEN_GAP = 26;
+  const LABEL_MIN_SCREEN_GAP = 16;
+
+  // ВИПРАВЛЕНО: підписи то з'являлись, то зникали хаотично під час
+  // плавного зуму (колесо миші / щипок пальцями). Причина — поріг
+  // видимості перераховувався на КОЖЕН кадр з крихітною зміною scale, а
+  // межа "показати/сховати" була однією й тією самою в обидва боки: щойно
+  // відстань між підписами опинялась дуже близько до порогу, найменше
+  // тремтіння зуму (навіть на соті частки відсотка) перекидало підпис то
+  // в один, то в інший стан — тобто миготіння. Два незалежні фікси:
+  //  1) LABEL_RECOMPUTE_STEP — перераховуємо видимість не на кожен кадр,
+  //     а лише коли масштаб змінився помітно (>4%). Це водночас і прибирає
+  //     дрібне тремтіння (воно просто нижче порогу перерахунку), і сильно
+  //     знижує навантаження на CPU/GPU під час зуму — на слабких
+  //     телефонах раніше це рахувалось і перемальовувалось на КОЖЕН кадр.
+  //  2) LABEL_HYSTERESIS — поріг "показати" і поріг "сховати" тепер РІЗНІ:
+  //     видимий підпис ховається лише якщо стало помітно тісніше, а
+  //     прихований з'являється лише якщо стало помітно вільніше. Між ними
+  //     є "мертва зона", в якій стан просто не змінюється.
+  const LABEL_RECOMPUTE_STEP = 0.04; // мінімальна відносна зміна масштабу (4%) для перерахунку
+  const LABEL_HYSTERESIS = 0.08;     // 8% "мертва зона" навколо порогу видимості
+
+  let lastLabelVisible = null; // стан видимості з попереднього перерахунку — потрібен для гістерезису
+
+  // Підписи мали ПОВНІСТЮ сталий розмір на екрані (scale(1/currentScale)
+  // точно компенсував scale(currentScale) мапи) — тому при наближенні
+  // текст лишався таким самим дрібним, як і на віддаленому вигляді.
+  // Тепер підпис теж трохи росте разом із зумом, але повільніше за саму
+  // мапу (степінь <1) — інакше на MAX_SCALE він знову став би величезним
+  // і накладався на сусідні підписи, як це вже було до попереднього фіксу.
+  const LABEL_BASE_BUMP = 1.4;   // базове збільшення розміру підписів (діє навіть при мінімальному зумі)
+  const LABEL_GROWTH_EXP = 0.45; // 0 = розмір сталий незалежно від зуму, 1 = росте пропорційно зуму мапи
+
+  function labelScaleFactor(scale) {
+    return LABEL_BASE_BUMP * Math.pow(scale, LABEL_GROWTH_EXP);
+  }
 
   function updateLabelVisibility() {
     if (!labelSelection || labelInfos.length === 0) return;
-    if (lastLabelScale === currentScale) return; // зум не змінювався — нема сенсу перераховувати (панорамування не впливає на відносні відстані)
+    // Перераховуємо лише коли масштаб змінився помітно — не на кожен кадр
+    // (продуктивність) і не на мікроскопічне тремтіння (анти-миготіння).
+    const scaleChangedEnough =
+      lastLabelScale === null ||
+      Math.abs(currentScale - lastLabelScale) / lastLabelScale > LABEL_RECOMPUTE_STEP;
+    if (!scaleChangedEnough) return;
     lastLabelScale = currentScale;
 
+    const labelFactor = labelScaleFactor(currentScale);
+    // ВИПРАВЛЕНО: тут раніше поріг додатково множився на розмір шрифту
+    // (навіть корінь квадратний з нього) — у щільних кластерах дрібних
+    // сусідніх областей (типове угруповання навколо Москви: Тула, Калуга,
+    // Липецька, Рязанська, Тамбовська...) це майже завжди програвало
+    // порівняно з більшим сусідом, і на екрані "не було видно текст для
+    // більшості областей" навіть на дуже глибокому зумі. Поріг видимості
+    // тепер залежить ЛИШЕ від зуму (як у початковій робочій версії) — сам
+    // розмір шрифту на це не впливає, тож підписи з'являються так само
+    // охоче, як і до збільшення тексту.
     const minDist = LABEL_MIN_SCREEN_GAP / currentScale;
-    const minDistSq = minDist * minDist;
+    // Дві окремі відстані замість однієї: щоб зникнути, підпис має
+    // опинитись ТІСНІШЕ за hideDist; щоб з'явитись — ВІЛЬНІШЕ за
+    // showDist. showDist > hideDist, тож між ними є запас, який гасить
+    // дрібні коливання.
+    const hideDistSq = (minDist * (1 - LABEL_HYSTERESIS)) ** 2;
+    const showDistSq = (minDist * (1 + LABEL_HYSTERESIS)) ** 2;
 
     const order = labelInfos.map((_, i) => i).sort((a, b) => labelInfos[b].area - labelInfos[a].area);
     const placed = [];
@@ -1306,24 +1367,33 @@ const RU_GEOJSON_NAME_MAP = {
     order.forEach(i => {
       const info = labelInfos[i];
       if (!info.valid) return;
+      const wasVisible = lastLabelVisible ? lastLabelVisible[i] : false;
+      const requiredDistSq = wasVisible ? hideDistSq : showDistSq;
       for (const p of placed) {
         const dx = info.cx - p.cx, dy = info.cy - p.cy;
-        if (dx * dx + dy * dy < minDistSq) return; // колізія з уже показаним підписом — ховаємо цей
+        if (dx * dx + dy * dy < requiredDistSq) return; // колізія з уже показаним підписом — ховаємо цей
       }
       placed.push(info);
       visible[i] = true;
     });
 
-    const invScale = 1 / currentScale;
+    lastLabelVisible = visible;
+
+    // invScale = скільки треба "відкотити" власний scale підпису відносно
+    // scale(currentScale) групи мапи, щоб на екрані підпис вийшов розміром
+    // labelFactor (а не currentScale, як було б без жодної компенсації, і
+    // не 1, як було з повною компенсацією раніше).
+    const invScale = labelFactor / currentScale;
     labelSelection
-      .style("display", (d, i) => visible[i] ? null : "none")
+      .classed("label-hidden", (d, i) => !visible[i])
       .attr("transform", (d, i) => {
         const info = labelInfos[i];
         if (!info.valid) return "translate(-1000,-1000)";
-        // scale(1/currentScale) — контр-масштаб: текст лишається сталого
-        // розміру на екрані незалежно від того, наскільки наближена мапа
-        // (без цього на MAX_SCALE підпис ставав величезним і сам починав
-        // "накладатись" на сусідні регіони).
+        // scale(labelFactor/currentScale) — часткова контр-масштаб: підпис
+        // росте разом із наближенням мапи, але повільніше за саму мапу,
+        // тож на MAX_SCALE він більший і читабельніший, ніж на MIN_SCALE,
+        // але не настільки величезний, щоб знову накладатись на сусідні
+        // регіони (як було до попереднього фіксу з повною компенсацією).
         return `translate(${info.cx},${info.cy}) scale(${invScale})`;
       });
   }

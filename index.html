@@ -104,6 +104,133 @@
       border-radius:14px;
       padding:18px;
     }
+    .stats-bar{
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px;
+      align-items:center;
+      justify-content:space-between;
+      margin-bottom:12px;
+    }
+    .active-count{
+      font-size:13px;
+      color:var(--muted);
+      white-space:nowrap;
+    }
+    .active-count strong{
+      color:var(--text);
+      font-size:15px;
+    }
+    .active-count.has-alerts strong{
+      color:#ff8a8a;
+    }
+    .region-search{
+      position:relative;
+      flex:1;
+      min-width:160px;
+      max-width:260px;
+    }
+    .region-search input{
+      width:100%;
+      background:var(--bg);
+      border:1px solid var(--panel-border);
+      border-radius:8px;
+      color:var(--text);
+      padding:7px 10px;
+      font-size:12.5px;
+    }
+    .region-search input:focus{
+      outline:none;
+      border-color:var(--accent);
+    }
+    .region-search-results{
+      position:absolute;
+      top:calc(100% + 4px);
+      left:0;
+      right:0;
+      background:var(--panel);
+      border:1px solid var(--panel-border);
+      border-radius:8px;
+      max-height:220px;
+      overflow-y:auto;
+      z-index:20;
+      display:none;
+      box-shadow:0 6px 18px rgba(0,0,0,.4);
+    }
+    .region-search-results.open{display:block;}
+    .region-search-result{
+      padding:8px 10px;
+      font-size:12.5px;
+      cursor:pointer;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+    }
+    .region-search-result:hover{background:var(--safe);}
+    .region-search-result .rs-status{font-size:10.5px; color:var(--muted);}
+    .region-search-result .rs-status.rs-alert{color:#ff8a8a;}
+    .region-search-empty{padding:10px; font-size:12px; color:var(--muted); text-align:center;}
+
+    .recent-feed-wrap{
+      margin-top:16px;
+      background:var(--panel);
+      border:1px solid var(--panel-border);
+      border-radius:14px;
+      padding:16px 18px;
+    }
+    .recent-feed-wrap h3{
+      font-size:12px;
+      text-transform:uppercase;
+      letter-spacing:.04em;
+      color:var(--muted);
+      margin:0 0 10px;
+    }
+    .recent-feed-item{
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:10px;
+      font-size:13px;
+      padding:8px 0;
+      border-bottom:1px solid var(--panel-border);
+      cursor:pointer;
+    }
+    .recent-feed-item:last-child{border-bottom:none;}
+    .recent-feed-item:hover{color:var(--accent);}
+    .recent-feed-item .rf-meta{color:var(--muted); font-size:11.5px; white-space:nowrap;}
+    .recent-feed-item .rf-region{overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+    .recent-feed-empty{color:var(--muted); font-size:12.5px; text-align:center; padding:6px 0;}
+
+    .toast-stack{
+      position:fixed;
+      top:16px;
+      left:50%;
+      transform:translateX(-50%);
+      z-index:100;
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+      align-items:center;
+      pointer-events:none;
+      width:100%;
+      padding:0 12px;
+    }
+    .toast{
+      background:var(--panel);
+      border:1px solid var(--alert-border);
+      color:var(--text);
+      padding:10px 16px;
+      border-radius:10px;
+      font-size:13px;
+      box-shadow:0 8px 24px rgba(0,0,0,.5);
+      max-width:360px;
+      opacity:0;
+      transform:translateY(-10px);
+      transition:opacity .25s ease, transform .25s ease;
+    }
+    .toast.show{opacity:1; transform:translateY(0);}
+    .toast strong{color:#ff8a8a;}
     .legend{
       display:flex;
       gap:18px;
@@ -313,6 +440,7 @@
   </style>
 </head>
 <body>
+<div class="toast-stack" id="toastStack"></div>
 
 <header>
   <h1>🛰 Карта повітряних тривог — Точна інтерактивна мапа</h1>
@@ -337,6 +465,14 @@
   </div>
 
   <div class="map-wrap">
+    <div class="stats-bar">
+      <div class="active-count" id="activeCount">Перевірка стану...</div>
+      <div class="region-search">
+        <input type="text" id="regionSearchInput" placeholder="🔍 Знайти область..." autocomplete="off">
+        <div class="region-search-results" id="regionSearchResults"></div>
+      </div>
+    </div>
+
     <div class="legend">
       <span><i class="dot safe"></i> спокійно</span>
       <span><i class="dot alert"></i> повітряна тривога</span>
@@ -355,6 +491,11 @@
         <button class="zoom-btn" id="zoomReset" style="font-size:14px;">⟲</button>
       </div>
     </div>
+  </div>
+
+  <div class="recent-feed-wrap" id="recentFeedWrap" style="display:none;">
+    <h3>Останні тривоги</h3>
+    <div id="recentFeedList"></div>
   </div>
 </div>
 
@@ -903,6 +1044,138 @@ const RU_GEOJSON_NAME_MAP = {
     return data;
   }
 
+  // ===== Toast-сповіщення про нові тривоги =====
+  function showToast(regionName) {
+    const stack = document.getElementById("toastStack");
+    if (!stack) return;
+    const toast = document.createElement("div");
+    toast.className = "toast";
+    toast.innerHTML = `⚠ Нова тривога: <strong>${regionName}</strong>`;
+    toast.addEventListener("click", () => { openModal(regionName); });
+    stack.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add("show"));
+    setTimeout(() => {
+      toast.classList.remove("show");
+      setTimeout(() => toast.remove(), 300);
+    }, 6000);
+  }
+
+  // ===== Лічильник "зараз у тривозі" =====
+  function updateActiveCount() {
+    const el = document.getElementById("activeCount");
+    if (!el) return;
+    const alertNames = Object.keys(currentState).filter(n => currentState[n].status === "alert");
+    const count = alertNames.length;
+    if (count === 0) {
+      el.innerHTML = "Зараз у тривозі: <strong>0</strong> регіонів";
+      el.classList.remove("has-alerts");
+    } else {
+      el.innerHTML = "Зараз у тривозі: <strong>" + count + "</strong> " + (count === 1 ? "регіон" : "регіонів");
+      el.classList.add("has-alerts");
+    }
+  }
+
+  // ===== Стрічка останніх тривог (дані вже рахує Worker — /state.recentAlerts) =====
+  function renderRecentFeed(recentAlerts) {
+    const wrap = document.getElementById("recentFeedWrap");
+    const list = document.getElementById("recentFeedList");
+    if (!wrap || !list) return;
+
+    if (!recentAlerts || recentAlerts.length === 0) {
+      wrap.style.display = "none";
+      return;
+    }
+    wrap.style.display = "block";
+    list.innerHTML = "";
+
+    const now = new Date();
+    recentAlerts.forEach(a => {
+      const start = new Date(a.start);
+      const end = a.end ? new Date(a.end) : null;
+      const item = document.createElement("div");
+      item.className = "recent-feed-item";
+      const durText = end
+        ? "Була " + fmtDuration((end - start) / 60000)
+        : "Триває " + fmtDuration((now - start) / 60000);
+      item.innerHTML = `<span class="rf-region">${a.region}</span><span class="rf-meta">${fmtTime(start)} · ${durText}</span>`;
+      item.addEventListener("click", () => openModal(a.region));
+      list.appendChild(item);
+    });
+  }
+
+  // ===== Пошук регіону + перехід/зум до нього =====
+  function zoomToRegion(name) {
+    const idx = allFeatures.findIndex(f => f.properties.cleanName === name);
+    if (idx === -1 || !labelInfos[idx] || !labelInfos[idx].valid) return;
+    const info = labelInfos[idx];
+    const targetScale = clampScale(8);
+    currentScale = targetScale;
+    currentTranslate = [width / 2 - info.cx * targetScale, height / 2 - info.cy * targetScale];
+    lastLabelScale = null;
+    updateTransform();
+  }
+
+  function setupRegionSearch() {
+    const input = document.getElementById("regionSearchInput");
+    const results = document.getElementById("regionSearchResults");
+    if (!input || !results) return;
+
+    function renderResults(query) {
+      const q = query.trim().toLowerCase();
+      results.innerHTML = "";
+      if (!q) { results.classList.remove("open"); return; }
+
+      const matches = allFeatures
+        .map(f => f.properties.cleanName)
+        .filter(name => name && name.toLowerCase().includes(q))
+        .slice(0, 8);
+
+      if (matches.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "region-search-empty";
+        empty.textContent = "Нічого не знайдено";
+        results.appendChild(empty);
+        results.classList.add("open");
+        return;
+      }
+
+      matches.forEach(name => {
+        const st = currentState[name];
+        const row = document.createElement("div");
+        row.className = "region-search-result";
+        const statusText = !st ? "" : st.status === "alert" ? (isCriticalAlert(st) ? "тривога 3+ год" : "тривога")
+          : st.status === "safe" ? "спокійно" : "немає даних";
+        const statusClass = st && st.status === "alert" ? "rs-alert" : "";
+        row.innerHTML = `<span>${name}</span><span class="rs-status ${statusClass}">${statusText}</span>`;
+        row.addEventListener("click", () => {
+          zoomToRegion(name);
+          openModal(name);
+          results.classList.remove("open");
+          input.value = name;
+        });
+        results.appendChild(row);
+      });
+      results.classList.add("open");
+    }
+
+    input.addEventListener("input", () => renderResults(input.value));
+    input.addEventListener("focus", () => { if (input.value.trim()) renderResults(input.value); });
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".region-search")) results.classList.remove("open");
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        const first = results.querySelector(".region-search-result");
+        if (first) first.click();
+      } else if (e.key === "Escape") {
+        results.classList.remove("open");
+        input.blur();
+      }
+    });
+  }
+
+  let isFirstPoll = true;
+
   async function pollTelegramSources() {
     let data;
     try {
@@ -915,6 +1188,14 @@ const RU_GEOJSON_NAME_MAP = {
 
     const now = new Date();
     const regions = data.regions || {};
+
+    // Знімок ДО оновлення — потрібен, щоб після цього цикру визначити, які
+    // регіони ЩОЙНО увійшли в тривогу (для toast-сповіщення), а не просто
+    // перелічити всі, що вже й так були в тривозі раніше.
+    const wasAlertBefore = {};
+    Object.keys(currentState).forEach(name => {
+      if (currentState[name].status === "alert") wasAlertBefore[name] = true;
+    });
 
     Object.keys(RU_REGION_KEYWORDS).forEach(regionName => {
       const info = regions[regionName];
@@ -952,6 +1233,22 @@ const RU_GEOJSON_NAME_MAP = {
 
       updateRegionVisual(regionName);
     });
+
+    // Toast-сповіщення про НОВІ тривоги (не показуємо на першому опитуванні
+    // після завантаження сторінки — інакше всі вже активні на той момент
+    // тривоги одразу висиплються пачкою toast'ів, що більше заважає, ніж
+    // допомагає).
+    if (!isFirstPoll) {
+      Object.keys(currentState).forEach(name => {
+        if (currentState[name].status === "alert" && !wasAlertBefore[name]) {
+          showToast(name);
+        }
+      });
+    }
+    isFirstPoll = false;
+
+    updateActiveCount();
+    renderRecentFeed(data.recentAlerts || []);
 
     const updated = data.updatedAt ? new Date(data.updatedAt) : now;
     setTelegramApiStatus("Telegram перевірено " + fmtTime(updated) + " — неофіційні дані (kupolrussia, lpr1_treugolnik), рахує Worker");
@@ -1237,6 +1534,7 @@ const RU_GEOJSON_NAME_MAP = {
       });
 
       renderMap(processedFeatures);
+      setupRegionSearch();
 
       // Українські області (Донецька, Луганська, Крим, Запорізька, Херсонська)
       // тимчасово не додаються на мапу й не відстежуються — лишається лише РФ.

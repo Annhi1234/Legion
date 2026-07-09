@@ -651,12 +651,6 @@
     fitTranslate = [width / 2 - s * cx, height / 2 - s * cy];
   }
 
-  // ===== Мова інтерфейсу за IP-геолокацією =====
-  // Worker сам визначає country за request.cf.country (Cloudflare, без
-  // сторонніх сервісів) і додає country/lang у відповідь /state. Правило:
-  // UA -> українська, будь-яка інша країна (RO, PL, US...) -> російська.
-  // До першої відповіді сайт лишається українською (значення за замовчуванням
-  // у розмітці), мова перемикається одразу, щойно приходять дані.
   let currentLang = "uk";
 
   function ukPluralRegion(n) {
@@ -758,12 +752,6 @@
     if (el) el.textContent = text;
   }
 
-  // Побудова карти "канонічна (українська) назва -> оригінальна російська
-  // назва з джерела geojson" — щоб при перемиканні на ru показувати
-  // регіони їхніми природними російськими назвами, а не перекладом "на
-  // льоту". Канонічний ключ (українська назва) лишається БЕЗ ЗМІН
-  // усюди у внутрішній логіці (currentState, історія, пошук за Worker) —
-  // мова впливає лише на те, що ВІДОБРАЖАЄТЬСЯ користувачу.
   const RU_DISPLAY_NAME = {};
 
   function regionDisplayName(canonicalName) {
@@ -810,7 +798,6 @@
     }
   }
 
-  // ===== Реальне джерело тривог =====
   let telegramProxyPrefix = (document.getElementById("proxyInput") || {}).value || "";
   let telegramPollTimer = null;
   const TELEGRAM_CHANNELS = ["kupolrussia", "lpr1_treugolnik"];
@@ -993,9 +980,6 @@ const RU_GEOJSON_NAME_MAP = {
   "Ярославская область": "Ярославська область",
 };
 
-  // Заповнюємо RU_DISPLAY_NAME (канонічна назва -> оригінальна російська)
-  // інвертуючи мапу вище — так російські назви лишаються природними
-  // (такими, як їх видає джерело geojson), без ризику розбіжностей.
   Object.keys(RU_GEOJSON_NAME_MAP).forEach(rawRu => {
     const ua = RU_GEOJSON_NAME_MAP[rawRu];
     if (!RU_DISPLAY_NAME[ua]) RU_DISPLAY_NAME[ua] = rawRu;
@@ -1263,11 +1247,6 @@ const RU_GEOJSON_NAME_MAP = {
       setTelegramApiStatus("⚠ Помилка: " + err.message + ". Перевірте URL Worker'а та що в ньому підключено KV.");
       return;
     }
-
-    // Мова інтерфейсу приходить від Worker'а (визначена за IP на межі
-    // мережі Cloudflare) — застосовуємо її, якщо вона відрізняється від
-    // поточної. Робимо це ДО решти рендеру цього циклу, щоб усе (лічильник,
-    // стрічка, підписи) одразу малювалось правильною мовою.
     if (data.lang && data.lang !== currentLang) {
       applyLanguage(data.lang);
     }
@@ -1551,9 +1530,6 @@ const RU_GEOJSON_NAME_MAP = {
       statusEl.insertAdjacentElement("afterend", noteEl);
     }
     if (st.note && (st.status === "alert" || st.status === "safe")) {
-      // st.note — це цитата з Telegram-повідомлення (завжди російською,
-      // мовою джерела) — не перекладаємо сам текст цитати, лише підпис
-      // "Джерело:"/"Источник:" навколо неї.
       noteEl.textContent = tt.noteSource + st.note + tt.noteSourceEnd;
       noteEl.style.display = "block";
     } else {

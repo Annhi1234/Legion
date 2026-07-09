@@ -802,6 +802,19 @@
     }
   }
 
+  function guessInitialLang() {
+    try {
+      const langs = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || ""];
+      for (const l of langs) {
+        const low = (l || "").toLowerCase();
+        if (low.startsWith("ru")) return "ru";
+        if (low.startsWith("uk")) return "uk";
+      }
+    } catch (e) {}
+    return "uk";
+  }
+  applyLanguage(guessInitialLang());
+
   let telegramProxyPrefix = (document.getElementById("proxyInput") || {}).value || "";
   let telegramPollTimer = null;
   const TELEGRAM_CHANNELS = ["kupolrussia", "lpr1_treugolnik"];

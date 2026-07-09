@@ -278,26 +278,29 @@
       fill: var(--alert);
       stroke: var(--alert-border);
       animation: pulse 1.6s ease-in-out infinite;
-      will-change: fill-opacity;
+      will-change: opacity;
     }
     .region-path.alert-critical {
       fill: var(--alert-critical);
       stroke: var(--alert-critical-border);
       animation: pulse-critical 1.6s ease-in-out infinite;
-      will-change: fill-opacity;
+      will-change: opacity;
     }
     .region-path.unknown {
       fill: var(--unknown);
       stroke: var(--unknown-border);
       stroke-dasharray: 2.5,2;
     }
+    .map-container.is-interacting .region-path {
+      shape-rendering: optimizeSpeed;
+    }
     @keyframes pulse{
-      0%, 100%{fill-opacity:1;}
-      50%{fill-opacity:.6;}
+      0%, 100%{opacity:1;}
+      50%{opacity:.6;}
     }
     @keyframes pulse-critical{
-      0%, 100%{fill-opacity:1;}
-      50%{fill-opacity:.7;}
+      0%, 100%{opacity:1;}
+      50%{opacity:.7;}
     }
     .region-label {
       fill: var(--text);
@@ -506,6 +509,7 @@
 <script>
   let currentState = {};
   let allFeatures = [];
+  const regionPathByName = new Map();
   const width = 1000;
   const height = 600;
 
@@ -1027,12 +1031,12 @@ const RU_GEOJSON_NAME_MAP = {
   function updateRegionVisual(name) {
     const st = currentState[name];
     if (!st) return;
+    const node = regionPathByName.get(name);
+    if (!node) return;
     const critical = isCriticalAlert(st);
-    regionsGroup.selectAll("path")
-      .filter(d => d.properties.cleanName === name)
-      .classed("alert", st.status === "alert")
-      .classed("alert-critical", critical)
-      .classed("unknown", st.status === "unknown");
+    node.classList.toggle("alert", st.status === "alert");
+    node.classList.toggle("alert-critical", critical);
+    node.classList.toggle("unknown", st.status === "unknown");
   }
 
   setInterval(() => {
@@ -1058,6 +1062,9 @@ const RU_GEOJSON_NAME_MAP = {
       })
       .on("click", function(d) {
         openModal(d.properties.cleanName);
+      })
+      .each(function(d) {
+        regionPathByName.set(d.properties.cleanName, this);
       });
 
     labelSelection = labelsGroup.selectAll("text")
@@ -1415,6 +1422,13 @@ const RU_GEOJSON_NAME_MAP = {
 
   const mapContainer = document.getElementById("mapContainer");
 
+  let interactionTimeout = null;
+  function markInteracting() {
+    mapContainer.classList.add("is-interacting");
+    clearTimeout(interactionTimeout);
+    interactionTimeout = setTimeout(() => mapContainer.classList.remove("is-interacting"), 200);
+  }
+
   let cachedRect = mapContainer.getBoundingClientRect();
   function refreshCachedRect() { cachedRect = mapContainer.getBoundingClientRect(); }
   window.addEventListener("resize", refreshCachedRect);
@@ -1432,6 +1446,7 @@ const RU_GEOJSON_NAME_MAP = {
 
   mapContainer.addEventListener("wheel", function(e) {
     e.preventDefault();
+    markInteracting();
     const [px, py] = clientToViewBox(e.clientX, e.clientY);
     const delta = e.deltaY > 0 ? 0.9 : 1.1;
     zoomAroundPoint(currentScale * delta, px, py);
@@ -1451,6 +1466,7 @@ const RU_GEOJSON_NAME_MAP = {
 
   const onMouseMove = (e) => {
     if (!isDragging) return;
+    markInteracting();
     const dx = e.clientX - startX;
     const dy = e.clientY - startY;
     currentTranslate = [startTranslate[0] + dx, startTranslate[1] + dy];
@@ -1485,6 +1501,7 @@ const RU_GEOJSON_NAME_MAP = {
 
   mapContainer.addEventListener("touchmove", function(e) {
     if (!touchState) return;
+    markInteracting();
     e.preventDefault();
     if (touchState.mode === "pan" && e.touches.length === 1) {
       const dx = e.touches[0].clientX - touchState.startX;

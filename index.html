@@ -802,7 +802,14 @@
     }
   }
 
+  // ФІКС: спочатку дивимось у localStorage — яку мову сервер (Worker)
+  // визначив минулого разу. Якщо є — рендеримо одразу нею, щоб не було
+  // "стрибка" з мови браузера на мову з Worker'а після завантаження.
   function guessInitialLang() {
+    try {
+      const cached = localStorage.getItem("site_lang");
+      if (cached === "uk" || cached === "ru") return cached;
+    } catch (e) {}
     try {
       const langs = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || ""];
       for (const l of langs) {
@@ -1270,6 +1277,13 @@ const RU_GEOJSON_NAME_MAP = {
     if (data.lang && data.lang !== currentLang) {
       applyLanguage(data.lang);
     }
+    // ФІКС: запам'ятовуємо мову, яку віддав Worker, щоб при наступному
+    // відкритті сторінки одразу відрендерити нею (без "стрибка" мови).
+    try {
+      if (data.lang === "uk" || data.lang === "ru") {
+        localStorage.setItem("site_lang", data.lang);
+      }
+    } catch (e) {}
 
     const now = new Date();
     const regions = data.regions || {};
@@ -1612,15 +1626,15 @@ const RU_GEOJSON_NAME_MAP = {
 
       renderMap(processedFeatures);
       setupRegionSearch();
-
-      pollTelegramSources();
     } catch (error) {
       console.error(error);
       document.getElementById("loadingOverlay").textContent = t().loadErrorText;
     }
   }
-
-  window.onload = loadData;
+  window.onload = function() {
+    loadData();
+    pollTelegramSources();
+  };
 </script>
 
 

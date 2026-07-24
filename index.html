@@ -719,6 +719,7 @@
       locale: "uk-UA",
       durMin: "хв",
       durHour: "год",
+      durDay: "дн",
       shortStrip: / ?ська область| ?область|Республіка ?| ?край| ?автономний округ|город/g,
     },
     ru: {
@@ -757,6 +758,7 @@
       locale: "ru-RU",
       durMin: "мин",
       durHour: "ч",
+      durDay: "дн",
       shortStrip: / ?ская область| ?область|Республика ?| ?край| ?автономный округ|город/gi,
     }
   };
@@ -1070,9 +1072,16 @@ const RU_GEOJSON_NAME_MAP = {
     const mins = Math.max(1, Math.round(totalMinutes));
     const tt = t();
     if (mins < 60) return mins + " " + tt.durMin;
-    const h = Math.floor(mins / 60);
+    const totalHours = Math.floor(mins / 60);
     const m = mins % 60;
-    return h + " " + tt.durHour + (m > 0 ? " " + m + " " + tt.durMin : "");
+    // ФІКС: додано вимір "дні" — раніше тривалість типу 103 год виводилась
+    // як є, замість зрозумілішого "4 дн 7 год". Поріг 24 год.
+    if (totalHours < 24) {
+      return totalHours + " " + tt.durHour + (m > 0 ? " " + m + " " + tt.durMin : "");
+    }
+    const d = Math.floor(totalHours / 24);
+    const h = totalHours % 24;
+    return d + " " + tt.durDay + (h > 0 ? " " + h + " " + tt.durHour : "");
   }
 
   function classForStatus(status) {
